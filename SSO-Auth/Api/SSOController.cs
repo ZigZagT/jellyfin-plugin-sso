@@ -7,7 +7,7 @@ using System.Net.Mime;
 using System.Security.Cryptography;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using Duende.IdentityModel.OidcClient;
+using IdentityModel.OidcClient;
 using Jellyfin.Data.Entities;
 using Jellyfin.Data.Enums;
 using Jellyfin.Plugin.SSO_Auth.Config;
@@ -108,7 +108,7 @@ public class SSOController : ControllerBase
                 ClientSecret = config.OidSecret?.Trim(),
                 RedirectUri = GetRequestBase(config.SchemeOverride, config.PortOverride) + $"/sso/OID/{(Request.Path.Value.Contains("/start/", StringComparison.InvariantCultureIgnoreCase) ? "redirect" : "r")}/" + provider,
                 Scope = string.Join(" ", scopes.Prepend("openid profile")),
-                DisablePushedAuthorization = config.DisablePushedAuthorization,
+                // DisablePushedAuthorization = config.DisablePushedAuthorization,
             };
             var oidEndpointUri = new Uri(config.OidEndpoint?.Trim());
             options.Policy.Discovery.AdditionalEndpointBaseAddresses.Add(oidEndpointUri.GetLeftPart(UriPartial.Authority));
@@ -333,7 +333,7 @@ public class SSOController : ControllerBase
                 ClientSecret = config.OidSecret?.Trim(),
                 RedirectUri = redirectUri,
                 Scope = string.Join(" ", config.OidScopes.Prepend("openid profile")),
-                DisablePushedAuthorization = config.DisablePushedAuthorization,
+                // DisablePushedAuthorization = config.DisablePushedAuthorization,
             };
             var oidEndpointUri = new Uri(config.OidEndpoint?.Trim());
             options.Policy.Discovery.AdditionalEndpointBaseAddresses.Add(oidEndpointUri.GetLeftPart(UriPartial.Authority));
@@ -343,10 +343,10 @@ public class SSOController : ControllerBase
             var oidcClient = new OidcClient(options);
             var state = await oidcClient.PrepareLoginAsync().ConfigureAwait(false);
 
-            if (state.IsError)
-            {
-                return ReturnError(StatusCodes.Status400BadRequest, $"Error preparing login: {state.Error} - {state.ErrorDescription}");
-            }
+            // if (state.IsError)
+            // {
+            //     return ReturnError(StatusCodes.Status400BadRequest, $"Error preparing login: {state.Error} - {state.ErrorDescription}");
+            // }
 
             StateManager.Add(state.State, new TimedAuthorizeState(state, DateTime.Now));
 
