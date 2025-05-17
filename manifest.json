@@ -7,14 +7,6 @@
     "overview": "Authenticate users against an SSO provider.",
     "owner": "9p4",
     "versions": [
-      {
-        "changelog": "Nightly build\n",
-        "checksum": "56310480e2b00eb903188404d4e41948",
-        "sourceUrl": "https://github.com/ZigZagT/jellyfin-plugin-sso/releases/download/nightly/sso-authentication_0.0.0.9001.zip",
-        "targetAbi": "10.9.0.0",
-        "timestamp": "2025-05-17T08:10:08Z",
-        "version": "0.0.0.10"
-      }
     ]
   }
 ]
