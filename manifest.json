@@ -1,0 +1,20 @@
+[
+  {
+    "category": "Authentication",
+    "description": "This plugin allows users to sign in through an SSO provider (such as Google, Facebook, or your own provider). This enables one-click signin.\nReview documentation at https://github.com/9p4/jellyfin-plugin-sso\n",
+    "guid": "505ce9d1-d916-42fa-86ca-673ef241d7df",
+    "name": "SSO Authentication",
+    "overview": "Authenticate users against an SSO provider.",
+    "owner": "9p4",
+    "versions": [
+      {
+        "changelog": "Nightly build\n",
+        "checksum": "453c315fccad5f68c00913f63a64ccfc",
+        "sourceUrl": "https://github.com/ZigZagT/jellyfin-plugin-sso/releases/download/nightly/sso-authentication_0.0.0.9000.zip",
+        "targetAbi": "10.9.0.0",
+        "timestamp": "2025-05-17T06:50:16Z",
+        "version": "0.0.0.9000"
+      }
+    ]
+  }
+]
