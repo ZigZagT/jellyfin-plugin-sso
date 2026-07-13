@@ -1,53 +1,261 @@
-name: Publish Release
+name: Publish Plugin Repository
 
 on:
-  release:
-    types:
-      - released
+  push:
+    branches: [ main ]
   workflow_dispatch:
+    inputs:
+      create_release:
+        description: Create a named GitHub release
+        required: false
+        default: false
+        type: boolean
+      release_note:
+        description: Optional release note to place before generated changelog
+        required: false
+        type: string
+      generate_changelog_from_commits:
+        description: Generate changelog from past commit messages
+        required: false
+        default: true
+        type: boolean
+      generate_changelog_since_commit:
+        description: Commit hash since which to collect changelog from (default is the previous release)
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: publish-${{ github.repository }}
+  cancel-in-progress: false
 
 jobs:
-  build:
-    uses: ./.github/workflows/build.yml
-    with:
-      dotnet-version: "9.0.*"
-      dotnet-target:  "net9.0"
-  upload:
+  publish:
     runs-on: ubuntu-latest
-    needs:
-    - build
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
     steps:
-    - name: Download Artifact
-      uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+    - name: Checkout
+      uses: actions/checkout@v4
       with:
-        name: build-artifact
-    - name: Prepare GitHub Release assets
-      run: |-
-        for file in ./*; do
-          md5sum ${file#./} >> ${file%.*}.md5
-          sha256sum ${file#./} >> ${file%.*}.sha256
-        done
-        ls -l
-    - name: Publish output artifacts
-      id: publish-assets
-      uses: softprops/action-gh-release@50195ba7f6f93d1ac97ba8332a178e008ad176aa
-      with:
-          prerelease: false
-          fail_on_unmatched_files: true
-          tag_name:  ${{ github.event.release.tag_name }}
-          files: ./*
+        fetch-depth: 0
+
+    - name: Resolve package version
+      id: version
+      shell: bash
+      run: |
+        SOURCE_VERSION_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+$'
+        SOURCE_VERSION="$(sed -n 's/^version: *"\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' build.yaml)"
+
+        if [ -z "${SOURCE_VERSION}" ]; then
+          echo "::error::Could not read version from build.yaml"
+          exit 1
+        fi
+
+        if [[ ! "${SOURCE_VERSION}" =~ ${SOURCE_VERSION_PATTERN} ]]; then
+          echo "::error::build.yaml version must use SemVer x.y.z; got ${SOURCE_VERSION}"
+          exit 1
+        fi
+
+        PACKAGE_VERSION="${SOURCE_VERSION}.${GITHUB_RUN_NUMBER}"
+        RELEASE_TAG="v${SOURCE_VERSION}"
+
+        echo "source=${SOURCE_VERSION}" >> "${GITHUB_OUTPUT}"
+        echo "package=${PACKAGE_VERSION}" >> "${GITHUB_OUTPUT}"
+        echo "release_tag=${RELEASE_TAG}" >> "${GITHUB_OUTPUT}"
+
+    - name: Validate publish ref
+      shell: bash
+      run: |
+        if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+          echo "::error::Publish must run from main; got ${GITHUB_REF}"
+          exit 1
+        fi
+
+    - name: Validate release request
+      if: ${{ github.event_name == 'workflow_dispatch' && inputs.create_release }}
       env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  generate:
-    runs-on: ubuntu-latest
-    needs:
-    - upload
-    steps:
-    - name: Publish Plugin Manifest
-      uses: Kevinjil/jellyfin-plugin-repo-action@a7832ecc44c6b1a45d531970f6647b8682b005b8
+        GH_TOKEN: ${{ github.token }}
+        RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
+      shell: bash
+      run: |
+        if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+          echo "::error::Release ${RELEASE_TAG} already exists"
+          exit 1
+        fi
+
+        if git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+          echo "::error::Tag ${RELEASE_TAG} already exists"
+          exit 1
+        fi
+
+    - name: Build package changelog
+      env:
+        GH_TOKEN: ${{ github.token }}
+        CREATE_RELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.create_release }}
+        RELEASE_NOTE: ${{ github.event_name == 'workflow_dispatch' && inputs.release_note || '' }}
+        GENERATE_CHANGELOG: ${{ github.event_name != 'workflow_dispatch' || inputs.generate_changelog_from_commits }}
+        CHANGELOG_SINCE_COMMIT: ${{ github.event_name == 'workflow_dispatch' && inputs.generate_changelog_since_commit || '' }}
+      shell: bash
+      run: |
+        mkdir -p _release
+
+        if [ "${CREATE_RELEASE}" = "true" ]; then
+          NOTES_FILE="_release/release-notes.md"
+          : > "${NOTES_FILE}"
+
+          if [ -n "${RELEASE_NOTE}" ]; then
+            printf '%s\n\n' "${RELEASE_NOTE}" >> "${NOTES_FILE}"
+          fi
+
+          if [ "${GENERATE_CHANGELOG}" != "false" ]; then
+            if [ -n "${CHANGELOG_SINCE_COMMIT}" ]; then
+              if ! git cat-file -e "${CHANGELOG_SINCE_COMMIT}^{commit}" >/dev/null 2>&1; then
+                echo "::error::generate_changelog_since_commit does not resolve to a commit: ${CHANGELOG_SINCE_COMMIT}"
+                exit 1
+              fi
+
+              CHANGELOG_BASE="$(git rev-parse --short "${CHANGELOG_SINCE_COMMIT}")"
+              CHANGELOG_RANGE="${CHANGELOG_SINCE_COMMIT}..HEAD"
+              CHANGELOG_TITLE="Changes since ${CHANGELOG_BASE}"
+            else
+              PREVIOUS_TAG="$(gh release list --repo "${GITHUB_REPOSITORY}" --exclude-drafts --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName // ""')"
+
+              if [ -n "${PREVIOUS_TAG}" ]; then
+                CHANGELOG_RANGE="${PREVIOUS_TAG}..HEAD"
+                CHANGELOG_TITLE="Changes since ${PREVIOUS_TAG}"
+              else
+                CHANGELOG_RANGE="HEAD"
+                CHANGELOG_TITLE="Changes"
+              fi
+            fi
+
+            COMMITS="$(git log --format='- %s (%h)' "${CHANGELOG_RANGE}")"
+            if [ -n "${COMMITS}" ]; then
+              printf '## %s\n\n%s\n' "${CHANGELOG_TITLE}" "${COMMITS}" >> "${NOTES_FILE}"
+            fi
+          fi
+
+          if [ ! -s "${NOTES_FILE}" ]; then
+            printf 'Release %s\n' "${{ steps.version.outputs.release_tag }}" > "${NOTES_FILE}"
+          fi
+
+          cp "${NOTES_FILE}" _release/package-changelog.md
+        else
+          {
+            printf 'Nightly build from %s.\n\n' "${GITHUB_SHA}"
+            printf 'Package version: %s\n' "${{ steps.version.outputs.package }}"
+          } > _release/nightly-notes.md
+
+          cp _release/nightly-notes.md _release/package-changelog.md
+        fi
+
+    - name: Patch build metadata
+      env:
+        BUILD_YAML: build.yaml
+        CHANGELOG_FILE: _release/package-changelog.md
+        PLUGIN_VERSION: ${{ steps.version.outputs.package }}
+      run: node .github/scripts/build-pages-site.mjs patch-build-yaml
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
       with:
-        ignorePrereleases: true
-        githubToken: ${{ secrets.GITHUB_TOKEN }}
-        repository: ${{ github.repository }}
-        pagesBranch: manifest-release
-        pagesFile: manifest.json
+        dotnet-version: 9.0.x
+
+    - name: Restore dependencies
+      run: dotnet restore
+
+    - name: Build .NET
+      run: dotnet build --no-restore --warnaserror
+
+    - name: Package plugin
+      id: jprm
+      uses: oddstr13/jellyfin-plugin-repository-manager@9497a0a499416cc572ed2e07a391d9f943a37b4d # v1.1.1
+      with:
+        version: ${{ steps.version.outputs.package }}
+        verbosity: debug
+        path: .
+        dotnet-target: "net9.0"
+        output: _dist/plugin
+
+    - name: Prepare named release assets
+      if: ${{ github.event_name == 'workflow_dispatch' && inputs.create_release }}
+      env:
+        BUILD_YAML: build.yaml
+        DIST_DIR: _dist/plugin
+        RELEASE_ASSET_DIR: _release-assets/stable
+        PLUGIN_VERSION: ${{ steps.version.outputs.package }}
+        RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
+      run: node .github/scripts/build-pages-site.mjs prepare-release
+
+    - name: Prepare nightly release assets
+      if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.create_release) }}
+      env:
+        BUILD_YAML: build.yaml
+        DIST_DIR: _dist/plugin
+        RELEASE_ASSET_DIR: _release-assets/nightly
+        PLUGIN_VERSION: ${{ steps.version.outputs.package }}
+        RELEASE_TAG: nightly
+      run: node .github/scripts/build-pages-site.mjs prepare-release
+
+    - name: Create named release
+      if: ${{ github.event_name == 'workflow_dispatch' && inputs.create_release }}
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: >
+        gh release create "${{ steps.version.outputs.release_tag }}"
+        _release-assets/stable/*
+        --repo "${GITHUB_REPOSITORY}"
+        --target "${GITHUB_SHA}"
+        --title "${{ steps.version.outputs.release_tag }}"
+        --notes-file _release/release-notes.md
+        --latest
+
+    - name: Publish nightly release
+      if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.create_release) }}
+      env:
+        GH_TOKEN: ${{ github.token }}
+      shell: bash
+      run: |
+        git tag -f nightly "${GITHUB_SHA}"
+        git push --force origin refs/tags/nightly
+
+        if gh release view nightly --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+          while IFS= read -r asset_name; do
+            if [ -n "${asset_name}" ]; then
+              gh release delete-asset nightly "${asset_name}" --repo "${GITHUB_REPOSITORY}" --yes
+            fi
+          done < <(gh release view nightly --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets[].name')
+
+          gh release upload nightly _release-assets/nightly/* --repo "${GITHUB_REPOSITORY}" --clobber
+          gh release edit nightly --repo "${GITHUB_REPOSITORY}" --title "Nightly" --notes-file _release/nightly-notes.md --target "${GITHUB_SHA}" --prerelease --latest=false
+        else
+          gh release create nightly _release-assets/nightly/* --repo "${GITHUB_REPOSITORY}" --target "${GITHUB_SHA}" --title "Nightly" --notes-file _release/nightly-notes.md --prerelease --latest=false
+        fi
+
+    - name: Build Pages repository
+      env:
+        GH_TOKEN: ${{ github.token }}
+        BUILD_YAML: build.yaml
+        PAGES_DIR: pages
+        STABLE_MANIFEST_PATH: manifest.json
+        NIGHTLY_MANIFEST_PATH: nightly/manifest.json
+      run: node .github/scripts/build-pages-site.mjs build-pages
+
+    - name: Configure Pages
+      uses: actions/configure-pages@v5
+
+    - name: Upload Pages artifact
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: pages
+
+    - name: Deploy Pages
+      id: deployment
+      uses: actions/deploy-pages@v4
