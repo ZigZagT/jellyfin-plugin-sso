@@ -10,6 +10,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="..\build.yaml" LogicalName="Jellyfin.Plugin.SSO_Auth.build.yaml" />
     <None Remove="Config\configPage.html" />
     <None Remove="Config\config.js" />
     <None Remove="Config\style.css" />

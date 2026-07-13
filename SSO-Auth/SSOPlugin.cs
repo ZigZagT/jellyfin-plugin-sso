@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using Jellyfin.Plugin.SSO_Auth.Config;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Plugins;
@@ -13,6 +14,11 @@ namespace Jellyfin.Plugin.SSO_Auth;
 /// </summary>
 public class SSOPlugin : BasePlugin<PluginConfiguration>, IPlugin, IHasWebPages
 {
+    private const string BuildMetadataResource = "Jellyfin.Plugin.SSO_Auth.build.yaml";
+    // These names are part of existing dashboard resource URLs.
+    private const string PluginPageName = "SSO-Auth";
+    private static readonly Lazy<(string Name, Guid Id)> PluginIdentity = new(LoadPluginIdentity);
+
     /// <summary>
     /// Initializes a new instance of the <see cref="SSOPlugin"/> class.
     /// </summary>
@@ -32,12 +38,12 @@ public class SSOPlugin : BasePlugin<PluginConfiguration>, IPlugin, IHasWebPages
     /// <summary>
     /// Gets the name of the SSO plugin.
     /// </summary>
-    public override string Name => "SSO-Auth";
+    public override string Name => PluginIdentity.Value.Name;
 
     /// <summary>
     /// Gets the GUID of the SSO plugin.
     /// </summary>
-    public override Guid Id => Guid.Parse("505ce9d1-d916-42fa-86ca-673ef241d7df");
+    public override Guid Id => PluginIdentity.Value.Id;
 
     /// <summary>
     /// Returns the available internal web pages of this plugin.
@@ -49,27 +55,27 @@ public class SSOPlugin : BasePlugin<PluginConfiguration>, IPlugin, IHasWebPages
         {
             new PluginPageInfo
             {
-                Name = Name,
+                Name = PluginPageName,
                 EmbeddedResourcePath = $"{GetType().Namespace}.Config.configPage.html"
             },
             new PluginPageInfo
             {
-                Name = Name + ".js",
+                Name = PluginPageName + ".js",
                 EmbeddedResourcePath = $"{GetType().Namespace}.Config.config.js"
             },
             new PluginPageInfo
             {
-                Name = Name + ".css",
+                Name = PluginPageName + ".css",
                 EmbeddedResourcePath = $"{GetType().Namespace}.Config.style.css"
             },
             new PluginPageInfo
             {
-                Name = Name + "-linking",
+                Name = PluginPageName + "-linking",
                 EmbeddedResourcePath = $"{GetType().Namespace}.Config.linking.html"
             },
             new PluginPageInfo
             {
-                Name = Name + "-linking.js",
+                Name = PluginPageName + "-linking.js",
                 EmbeddedResourcePath = $"{GetType().Namespace}.Config.linking.js"
             },
         };
@@ -114,5 +120,38 @@ public class SSOPlugin : BasePlugin<PluginConfiguration>, IPlugin, IHasWebPages
                 EmbeddedResourcePath = $"{GetType().Namespace}.Views.jellyfin-apiClient.esm.min.js"
             },
         };
+    }
+
+    private static (string Name, Guid Id) LoadPluginIdentity()
+    {
+        using var stream = typeof(SSOPlugin).Assembly.GetManifestResourceStream(BuildMetadataResource)
+            ?? throw new InvalidOperationException($"Embedded resource {BuildMetadataResource} was not found.");
+        using var reader = new StreamReader(stream);
+
+        string name = null;
+        Guid? id = null;
+        while (reader.ReadLine() is { } line)
+        {
+            if (line.StartsWith("name:", StringComparison.Ordinal))
+            {
+                name = ParseBuildMetadataValue(line);
+            }
+            else if (line.StartsWith("guid:", StringComparison.Ordinal))
+            {
+                id = Guid.Parse(ParseBuildMetadataValue(line));
+            }
+
+            if (name is not null && id.HasValue)
+            {
+                return (name, id.Value);
+            }
+        }
+
+        throw new InvalidOperationException("build.yaml must define name and guid.");
+    }
+
+    private static string ParseBuildMetadataValue(string line)
+    {
+        return line[(line.IndexOf(':') + 1)..].Trim().Trim('"');
     }
 }
